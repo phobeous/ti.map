@@ -6,8 +6,11 @@
  */
 package ti.map;
 
+import android.animation.ObjectAnimator;
+import android.animation.TypeEvaluator;
 import android.graphics.Bitmap;
 import android.os.Message;
+import android.util.Property;
 import android.view.View;
 import com.google.android.gms.maps.model.BitmapDescriptorFactory;
 import com.google.android.gms.maps.model.LatLng;
@@ -65,6 +68,7 @@ public class AnnotationProxy extends KrollProxy
 	private static final int MSG_SET_DRAGGABLE = MSG_FIRST_ID + 302;
 	private static final int MSG_UPDATE_INFO_WINDOW = MSG_FIRST_ID + 303;
 	private static final int MSG_SET_HIDDEN = MSG_FIRST_ID + 304;
+	private static final int MSG_SET_IMAGE = MSG_FIRST_ID + 305;
 
 	public AnnotationProxy()
 	{
@@ -176,6 +180,15 @@ public class AnnotationProxy extends KrollProxy
 				return true;
 			}
 
+			case MSG_SET_IMAGE:
+				result = (AsyncResult) msg.obj;
+				Marker m = marker.getMarker();
+				if (m != null) {
+					updateImage(m, result.getArg());
+				}
+				result.setResult(null);
+				return true;
+
 			default: {
 				return super.handleMessage(msg);
 			}
@@ -186,8 +199,23 @@ public class AnnotationProxy extends KrollProxy
 	{
 		Marker m = marker.getMarker();
 		if (m != null) {
-			m.setPosition(new LatLng(latitude, longitude));
+			animateMarkerToPosition(m, new LatLng(latitude, longitude));
 		}
+	}
+
+	private void animateMarkerToPosition(Marker marker, LatLng finalPosition)
+	{
+		TypeEvaluator<LatLng> typeEvaluator = (fraction, startValue, endValue) ->
+		{
+			double lat = (endValue.latitude - startValue.latitude) * fraction + startValue.latitude;
+			double lng = (endValue.longitude - startValue.longitude) * fraction + startValue.longitude;
+			return new LatLng(lat, lng);
+		};
+		Property<Marker, LatLng> property = Property.of(Marker.class, LatLng.class, "position");
+
+		ObjectAnimator animator = ObjectAnimator.ofObject(marker, property, typeEvaluator, finalPosition);
+		animator.setDuration(200);
+		animator.start();
 	}
 
 	public void processOptions()
@@ -318,6 +346,51 @@ public class AnnotationProxy extends KrollProxy
 		return markerOptions;
 	}
 
+	public void updateImage(Marker m, Object value)
+	{
+		if (hasProperty(MapModule.PROPERTY_CUSTOM_VIEW)) {
+			// Custom view used. Update image not allowed
+			return;
+		}
+
+		if (value == null) {
+			m.setIcon(BitmapDescriptorFactory.defaultMarker(TiConvert.toFloat(getProperty(TiC.PROPERTY_PINCOLOR))));
+			setIconImageDimensions(-1, -1);
+			return;
+		}
+
+		// image not null has only effect if customView is null. Any other case, customView has more priority
+		if (value != null) {
+			// Image path
+			if (value instanceof String) {
+				TiDrawableReference imageref = TiDrawableReference.fromUrl(this, (String) value);
+				Bitmap bitmap = imageref.getBitmap();
+				if (bitmap != null) {
+					try {
+						if (m != null) {
+							m.setIcon(BitmapDescriptorFactory.fromBitmap(bitmap));
+							setIconImageDimensions(bitmap.getWidth(), bitmap.getHeight());
+						}
+					} catch (Exception e) {
+					}
+					return;
+				}
+			}
+
+			// Image blob
+			if (value instanceof TiBlob) {
+				Bitmap bitmap = ((TiBlob) value).getImage();
+				if (bitmap != null) {
+					if (m != null) {
+						m.setIcon(BitmapDescriptorFactory.fromBitmap(bitmap));
+						setIconImageDimensions(bitmap.getWidth(), bitmap.getHeight());
+					}
+					return;
+				}
+			}
+		}
+	}
+
 	public void setTiMarker(TiMarker m)
 	{
 		marker = m;
@@ -423,6 +496,8 @@ public class AnnotationProxy extends KrollProxy
 		} else if (name.equals(MapModule.PROPERTY_HIDDEN)) {
 			TiMessenger.sendBlockingMainMessage(getMainHandler().obtainMessage(MSG_SET_HIDDEN),
 												TiConvert.toBoolean(value));
+		} else if (name.equals(TiC.PROPERTY_IMAGE)) {
+			TiMessenger.sendBlockingMainMessage(getMainHandler().obtainMessage(MSG_SET_IMAGE), value);
 		}
 	}
 
